@@ -56,6 +56,8 @@ static unsigned long int recording_epoch = 1;
 /** Signaled epoch, every resource tagged with lower or equal epoch are no more in-flight */
 static volatile unsigned long int signaled_epoch = 0;
 
+static SDL_sem* signaled_semaphore = NULL;
+
 /**
  * Callback inserted in the display list to keep track of what the GPU is already done with
  *
@@ -65,6 +67,7 @@ void PSP_epoch_signal_callback(int cmd){
     //SDL_Log("Signaled : epoch"); // DO NOT LOG IN INTERRUPT HANDLERS...
     if(cmd == 1) {
         signaled_epoch++;
+        SDL_SemPost(signaled_semaphore);
     }
 }
 
@@ -74,14 +77,14 @@ static void PSP_IncreaseEpoch(){
 }
 
 static void PSP_WaitForEpoch(unsigned long epoch) {
+    //SDL_Log("Waiting for epoch %ld, signaled : %ld", epoch, signaled_epoch);
     if(signaled_epoch >= epoch) {
         return;
     }
 
-    while(signaled_epoch < epoch){
-        //sceGuSync(0,0);
-        //SDL_Log("Waiting for epoch %ld, signaled : %ld", epoch, signaled_epoch);
-    }; //Do busy wait for now //TODO change this
+    do {
+        SDL_SemWait(signaled_semaphore);
+    } while(signaled_epoch < epoch);
 
     return;
 }
@@ -119,6 +122,10 @@ typedef struct PSP_TextureData
 
 static void PSP_UpdateEpoch(PSP_TextureData* data){
     data->epochUsed = recording_epoch;
+}
+
+static void PSP_UpdateEpochI(SDL_Texture* tex) {
+    PSP_UpdateEpoch(tex->driverdata);
 }
 
 typedef struct
@@ -253,6 +260,8 @@ PixelFormatToPSPFMT(Uint32 format)
         return GU_PSM_4444;
     case SDL_PIXELFORMAT_ABGR8888:
         return GU_PSM_8888;
+    case SDL_PIXELFORMAT_INDEX8:
+        return GU_PSM_T8;
     default:
         return GU_PSM_8888;
     }
@@ -465,9 +474,9 @@ TextureSpillToSram(PSP_RenderData* data, PSP_TextureData* psp_texture)
 static int
 TexturePromoteToVram(PSP_RenderData* data, PSP_TextureData* psp_texture, SDL_bool target)
 {
-    PSP_WaitForEpoch(psp_texture->epochUsed);
     // Assumes texture in sram and a large enough continuous block in vram
     void* tdata = valloc(psp_texture->size);
+    PSP_WaitForEpoch(psp_texture->epochUsed);
     if(psp_texture->swizzled && target) {
         return TextureUnswizzle(psp_texture, tdata);
     } else {
@@ -1109,10 +1118,6 @@ PSP_SetBlendState(PSP_RenderData* data, PSP_BlendState* state)
         }
     }
 
-    if(state->texture){
-        PSP_TextureData *psp_texture = (PSP_TextureData *) state->texture->driverdata;
-        PSP_UpdateEpoch(psp_texture);
-    }
 
     *current = *state;
 }
@@ -1242,6 +1247,7 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
                 };
                 PSP_SetBlendState(data, &state);
                 sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF|GU_VERTEX_32BITF|GU_TRANSFORM_2D, 2 * count, 0, verts);
+                PSP_UpdateEpochI(cmd->data.draw.texture);
                 break;
             }
 
@@ -1259,6 +1265,7 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
                 };
                 PSP_SetBlendState(data, &state);
                 sceGuDrawArray(GU_TRIANGLE_FAN, GU_TEXTURE_32BITF|GU_VERTEX_32BITF|GU_TRANSFORM_2D, 4, 0, verts);
+                PSP_UpdateEpochI(cmd->data.draw.texture);
                 break;
             }
 
@@ -1375,6 +1382,8 @@ PSP_DestroyRenderer(SDL_Renderer * renderer)
         SDL_free(data);
     }
     SDL_free(renderer);
+
+    SDL_DestroySemaphore(signaled_semaphore);
 }
 
 static int
@@ -1505,6 +1514,12 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
     sceKernelRegisterSubIntrHandler(PSP_VBLANK_INT, 0, psp_on_vblank, data);
     sceKernelEnableSubIntr(PSP_VBLANK_INT, 0);
     //sceGuCallMode(1);
+
+
+    signaled_semaphore = SDL_CreateSemaphore(0);
+    if(signaled_semaphore == NULL){
+        return SDL_OutOfMemory();
+    }
 
     return renderer;
 }
