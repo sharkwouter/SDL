@@ -50,6 +50,43 @@
 
 static unsigned int __attribute__((aligned(16))) DisplayList[262144];
 
+/** Currently recorded epoch, resources used in current calls should be tagged with this epoch and will be considered in-flight*/
+static unsigned long int recording_epoch = 1;
+
+/** Signaled epoch, every resource tagged with lower or equal epoch are no more in-flight */
+static volatile unsigned long int signaled_epoch = 0;
+
+/**
+ * Callback inserted in the display list to keep track of what the GPU is already done with
+ *
+ * Increase monotonically the epoch id
+ */
+void PSP_epoch_signal_callback(int cmd){
+    //SDL_Log("Signaled : epoch"); // DO NOT LOG IN INTERRUPT HANDLERS...
+    if(cmd == 1) {
+        signaled_epoch++;
+    }
+}
+
+static void PSP_IncreaseEpoch(){
+    sceGuSignal(GU_BEHAVIOR_CONTINUE, 1);
+    recording_epoch++;
+}
+
+static void PSP_WaitForEpoch(unsigned long epoch) {
+    if(signaled_epoch >= epoch) {
+        return;
+    }
+
+    while(signaled_epoch < epoch){
+        //sceGuSync(0,0);
+        SDL_Log("Waiting for epoch %ld, signaled : %ld", epoch, signaled_epoch);
+    }; //Do busy wait for now //TODO change this
+
+    return;
+}
+
+
 
 #define COL5650(r,g,b,a)    ((r>>3) | ((g>>2)<<5) | ((b>>3)<<11))
 #define COL5551(r,g,b,a)    ((r>>3) | ((g>>3)<<5) | ((b>>3)<<10) | (a>0?0x7000:0))
@@ -74,9 +111,14 @@ typedef struct PSP_TextureData
     unsigned int        format;                             /**< Image format - one of ::pgePixelFormat. */
     unsigned int        pitch;
     SDL_bool            swizzled;                           /**< Is image swizzled. */
+    unsigned long       epochUsed;                          /**< Last epoch this image was involved in*/
     struct PSP_TextureData*    prevhotw;                    /**< More recently used render target */
     struct PSP_TextureData*    nexthotw;                    /**< Less recently used render target */
 } PSP_TextureData;
+
+static void PSP_UpdateEpoch(PSP_TextureData* data){
+    data->epochUsed = recording_epoch;
+}
 
 typedef struct
 {
@@ -511,6 +553,7 @@ PSP_CreateTexture(SDL_Renderer * renderer, SDL_Texture * texture)
     psp_texture->textureHeight = TextureNextPow2(texture->h);
     psp_texture->textureWidth = TextureNextPow2(texture->w);
     psp_texture->format = PixelFormatToPSPFMT(texture->format);
+    psp_texture->epochUsed = 0;
 
     switch(psp_texture->format)
     {
@@ -586,7 +629,7 @@ static int
 PSP_UpdateTexture(SDL_Renderer * renderer, SDL_Texture * texture,
                    const SDL_Rect * rect, const void *pixels, int pitch)
 {
-/*  PSP_TextureData *psp_texture = (PSP_TextureData *) texture->driverdata; */
+    PSP_TextureData *psp_texture = (PSP_TextureData *) texture->driverdata;
     const Uint8 *src;
     Uint8 *dst;
     int row, length,dpitch;
@@ -604,7 +647,7 @@ PSP_UpdateTexture(SDL_Renderer * renderer, SDL_Texture * texture,
         }
     }
 
-    sceKernelDcacheWritebackAll();
+    sceKernelDcacheWritebackRange(psp_texture->data, psp_texture->size);
     return 0;
 }
 
@@ -632,7 +675,8 @@ PSP_UnlockTexture(SDL_Renderer * renderer, SDL_Texture * texture)
     rect.y = 0;
     rect.w = texture->w;
     rect.h = texture->h;
-    PSP_UpdateTexture(renderer, texture, &rect, psp_texture->data, psp_texture->pitch);
+    //PSP_UpdateTexture(renderer, texture, &rect, psp_texture->data, psp_texture->pitch);
+    // TODO this should stay no-op
 }
 
 static void
@@ -973,6 +1017,9 @@ StartDrawing(SDL_Renderer * renderer)
     if(!data->displayListAvail) {
         sceGuStart(GU_DIRECT, DisplayList);
         data->displayListAvail = SDL_TRUE;
+
+        //recording_epoch = 1;
+        //signaled_epoch = 0;
         //ResetBlendState(&data->blendState);
     }
 
@@ -981,6 +1028,7 @@ StartDrawing(SDL_Renderer * renderer)
         SDL_Texture* texture = renderer->target;
         if(texture) {
             PSP_TextureData* psp_texture = (PSP_TextureData*) texture->driverdata;
+            PSP_UpdateEpoch(psp_texture);
             // Set target, registering LRU
             TextureBindAsTarget(data, psp_texture);
         } else {
@@ -1043,6 +1091,11 @@ PSP_SetBlendState(PSP_RenderData* data, PSP_BlendState* state)
         } else {
             sceGuDisable(GU_TEXTURE_2D);
         }
+    }
+
+    if(state->texture){
+        PSP_TextureData *psp_texture = (PSP_TextureData *) state->texture->driverdata;
+        PSP_UpdateEpoch(psp_texture);
     }
 
     *current = *state;
@@ -1226,6 +1279,7 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
         cmd = cmd->next;
     }
 
+    PSP_IncreaseEpoch();
     return 0;
 }
 
@@ -1268,6 +1322,7 @@ PSP_DestroyTexture(SDL_Renderer * renderer, SDL_Texture * texture)
     if(psp_texture == 0)
         return;
 
+    PSP_WaitForEpoch(psp_texture->epochUsed);
     LRUTargetRemove(renderdata, psp_texture);
     TextureStorageFree(psp_texture->data);
     SDL_free(psp_texture);
@@ -1389,6 +1444,7 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
     data->frontbuffer = ((uint8_t*)doublebuffer)+PSP_FRAME_BUFFER_SIZE*data->bpp;
 
     sceGuInit();
+
     /* setup GU */
     sceGuStart(GU_DIRECT, DisplayList);
     sceGuDrawBuffer(data->psm, vrelptr(data->frontbuffer), PSP_FRAME_BUFFER_WIDTH);
@@ -1415,6 +1471,7 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
     //Setup initial blend state
     ResetBlendState(&data->blendState);
 
+    sceGuSetCallback(GU_CALLBACK_SIGNAL, PSP_epoch_signal_callback);
     sceGuFinish();
     sceGuSync(0,0);
     sceDisplayWaitVblankStartCB();
@@ -1424,6 +1481,7 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
     data->vblank_not_reached = SDL_TRUE;
     sceKernelRegisterSubIntrHandler(PSP_VBLANK_INT, 0, psp_on_vblank, data);
     sceKernelEnableSubIntr(PSP_VBLANK_INT, 0);
+    //sceGuCallMode(1);
 
     return renderer;
 }
