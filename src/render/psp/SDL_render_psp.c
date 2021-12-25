@@ -80,7 +80,7 @@ static void PSP_WaitForEpoch(unsigned long epoch) {
 
     while(signaled_epoch < epoch){
         //sceGuSync(0,0);
-        SDL_Log("Waiting for epoch %ld, signaled : %ld", epoch, signaled_epoch);
+        //SDL_Log("Waiting for epoch %ld, signaled : %ld", epoch, signaled_epoch);
     }; //Do busy wait for now //TODO change this
 
     return;
@@ -109,7 +109,8 @@ typedef struct PSP_TextureData
     unsigned int        textureHeight;                      /**< Texture height (power of two). */
     unsigned int        bits;                               /**< Image bits per pixel. */
     unsigned int        format;                             /**< Image format - one of ::pgePixelFormat. */
-    unsigned int        pitch;
+    unsigned int        pitch;                              /**< Pitch in bytes from one row to another*/
+    unsigned int        rows;                               /**< Number of rows actually allocated in memory*/
     SDL_bool            swizzled;                           /**< Is image swizzled. */
     unsigned long       epochUsed;                          /**< Last epoch this image was involved in*/
     struct PSP_TextureData*    prevhotw;                    /**< More recently used render target */
@@ -324,8 +325,8 @@ TextureSwizzle(PSP_TextureData *psp_texture, void* dst)
     if(psp_texture->swizzled)
         return 1;
 
-    bytewidth = psp_texture->textureWidth*(psp_texture->bits>>3);
-    height = psp_texture->size / bytewidth;
+    bytewidth = psp_texture->pitch;
+    height = psp_texture->rows;
 
     rowblocks = (bytewidth>>4);
     rowblocksadd = (rowblocks-1)<<7;
@@ -383,8 +384,8 @@ TextureUnswizzle(PSP_TextureData *psp_texture, void* dst)
     if(!psp_texture->swizzled)
         return 1;
 
-    bytewidth = psp_texture->textureWidth*(psp_texture->bits>>3);
-    height = psp_texture->size / bytewidth;
+    bytewidth = psp_texture->pitch;
+    height = psp_texture->rows;
 
     widthblocks = bytewidth/16;
     heightblocks = height/8;
@@ -443,6 +444,7 @@ TextureUnswizzle(PSP_TextureData *psp_texture, void* dst)
 static int
 TextureSpillToSram(PSP_RenderData* data, PSP_TextureData* psp_texture)
 {
+    PSP_WaitForEpoch(psp_texture->epochUsed);
     // Assumes the texture is in VRAM
     if(psp_texture->swizzled) {
         //Texture was swizzled in vram, just copy to system memory
@@ -463,6 +465,7 @@ TextureSpillToSram(PSP_RenderData* data, PSP_TextureData* psp_texture)
 static int
 TexturePromoteToVram(PSP_RenderData* data, PSP_TextureData* psp_texture, SDL_bool target)
 {
+    PSP_WaitForEpoch(psp_texture->epochUsed);
     // Assumes texture in sram and a large enough continuous block in vram
     void* tdata = valloc(psp_texture->size);
     if(psp_texture->swizzled && target) {
@@ -515,7 +518,7 @@ TextureBindAsTarget(PSP_RenderData* data, PSP_TextureData* psp_texture) {
         }
     }
     LRUTargetBringFront(data, psp_texture);
-    sceGuDrawBufferList(psp_texture->format, vrelptr(psp_texture->data), psp_texture->textureWidth);
+    sceGuDrawBufferList(psp_texture->format, vrelptr(psp_texture->data), (psp_texture->pitch*8)/psp_texture->bits);
 
     // Stencil alpha dst hack
     dstFormat = psp_texture->format;
@@ -529,6 +532,10 @@ TextureBindAsTarget(PSP_RenderData* data, PSP_TextureData* psp_texture) {
         sceGuDisable(GU_STENCIL_TEST);
         sceGuDisable(GU_ALPHA_TEST);
     }
+
+    //Enable scissor to avoid drawing outside viewport
+    sceGuEnable(GU_SCISSOR_TEST);
+    sceGuScissor(0,0,psp_texture->width, psp_texture->height);
     return 0;
 }
 
@@ -557,6 +564,9 @@ PSP_CreateTexture(SDL_Renderer * renderer, SDL_Texture * texture)
 
     switch(psp_texture->format)
     {
+        case GU_PSM_T8:
+            psp_texture->bits = 8;
+            break;
         case GU_PSM_5650:
         case GU_PSM_5551:
         case GU_PSM_4444:
@@ -572,7 +582,13 @@ PSP_CreateTexture(SDL_Renderer * renderer, SDL_Texture * texture)
     }
 
     psp_texture->pitch = psp_texture->textureWidth * SDL_BYTESPERPIXEL(texture->format);
-    psp_texture->size = psp_texture->textureHeight*psp_texture->pitch;
+
+    //Round the pitch up to 16 bytes
+    psp_texture->pitch = (psp_texture->pitch + 15) & 0xfffffff0;
+    //Round the rows up to 8px
+    psp_texture->rows = (psp_texture->height + 7) & 0xfffffff8;
+
+    psp_texture->size = psp_texture->rows*psp_texture->pitch;
     if(texture->access & SDL_TEXTUREACCESS_TARGET) {
         if(TextureSpillTargetsForSpace(renderer->driverdata, psp_texture->size) < 0){
             return -1;
@@ -667,14 +683,14 @@ PSP_LockTexture(SDL_Renderer * renderer, SDL_Texture * texture,
 static void
 PSP_UnlockTexture(SDL_Renderer * renderer, SDL_Texture * texture)
 {
-    PSP_TextureData *psp_texture = (PSP_TextureData *) texture->driverdata;
-    SDL_Rect rect;
+    //PSP_TextureData *psp_texture = (PSP_TextureData *) texture->driverdata;
+    //SDL_Rect rect;
 
     /* We do whole texture updates, at least for now */
-    rect.x = 0;
-    rect.y = 0;
-    rect.w = texture->w;
-    rect.h = texture->h;
+    //rect.x = 0;
+    //rect.y = 0;
+    //rect.w = texture->w;
+    //rect.h = texture->h;
     //PSP_UpdateTexture(renderer, texture, &rect, psp_texture->data, psp_texture->pitch);
     // TODO this should stay no-op
 }
@@ -1130,6 +1146,7 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
                 SDL_Rect *viewport = &cmd->data.viewport.rect;
                 sceGuOffset(2048 - (viewport->w >> 1), 2048 - (viewport->h >> 1));
                 sceGuViewport(2048, 2048, viewport->w, viewport->h);
+                sceGuEnable(GU_SCISSOR_TEST);
                 sceGuScissor(viewport->x, viewport->y, viewport->w, viewport->h);
                 break;
             }
@@ -1139,7 +1156,7 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
                 if(cmd->data.cliprect.enabled){
                     sceGuEnable(GU_SCISSOR_TEST);
                     sceGuScissor(rect->x, rect->y, rect->w, rect->h);
-                } else {
+                } else if(!data->boundTarget) {
                     sceGuDisable(GU_SCISSOR_TEST);
                 }
                 break;
@@ -1327,6 +1344,12 @@ PSP_DestroyTexture(SDL_Renderer * renderer, SDL_Texture * texture)
     TextureStorageFree(psp_texture->data);
     SDL_free(psp_texture);
     texture->driverdata = NULL;
+    if(renderdata->boundTarget == texture){
+        renderdata->boundTarget = NULL;
+    }
+    if(renderdata->blendState.texture == texture) {
+        renderdata->blendState.texture = NULL;
+    }
 }
 
 static void
