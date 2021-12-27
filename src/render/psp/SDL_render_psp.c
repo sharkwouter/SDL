@@ -345,14 +345,6 @@ ListNodeBringFront(PSP_TextureList* list, PSP_TextureData* psp_texture) {
 
 static void
 TextureStorageFree(void* storage, size_t size) {
-    uint32_t* pixels = storage;
-    size_t j = 0;
-    for(j=0; j < size / 4; j++){
-        pixels[j] = 0xff01ff01;
-    }
-
-    sceKernelDcacheWritebackRange(storage, size);
-
     if(InVram(storage)) {
         vfree(storage);
     } else {
