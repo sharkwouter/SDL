@@ -67,29 +67,43 @@ void PSP_epoch_signal_callback(int cmd){
     //SDL_Log("Signaled : epoch"); // DO NOT LOG IN INTERRUPT HANDLERS...
     if(cmd == 1) {
         signaled_epoch++;
-        SDL_SemPost(signaled_semaphore);
+        //SDL_SemPost(signaled_semaphore);
     }
+}
+extern void sendCommandi(int cmd, int argument);
+extern void sendCommandiStall(int cmd, int argument);
+
+static void sendDrawSyncSignal(int argument){
+    int signal = 0x08;
+
+    // Mandatory CMD order : SIG END FIN END
+    sendCommandi(14,((signal & 0xff) << 16) | (argument & 0xffff));
+    sendCommandi(12,0);
+		sendCommandi(15,0);
+		sendCommandi(12,0);
+    sendCommandiStall(0,0);
 }
 
 static void PSP_IncreaseEpoch(){
-    sceGuSignal(GU_BEHAVIOR_CONTINUE, 1);
+    // Record a signal DRAW_SYNC
+    sendDrawSyncSignal(1);
+    sceGuSignal(GU_BEHAVIOR_SUSPEND, 1);
     recording_epoch++;
 }
 
 static void PSP_WaitForEpoch(unsigned long epoch) {
-    //SDL_Log("Waiting for epoch %ld, signaled : %ld", epoch, signaled_epoch);
+    SDL_Log("Waiting for epoch %ld, signaled : %ld", epoch, signaled_epoch);
     if(signaled_epoch >= epoch) {
         return;
     }
 
     do {
-        SDL_SemWait(signaled_semaphore);
+        //SDL_SemWaitTimeout(signaled_semaphore, 1);
+        //SDL_Log("Waiting for %ld : signaled %ld", epoch, signaled_epoch);
     } while(signaled_epoch < epoch);
 
     return;
 }
-
-
 
 #define COL5650(r,g,b,a)    ((r>>3) | ((g>>2)<<5) | ((b>>3)<<11))
 #define COL5551(r,g,b,a)    ((r>>3) | ((g>>3)<<5) | ((b>>3)<<10) | (a>0?0x7000:0))
@@ -116,8 +130,8 @@ typedef struct PSP_TextureData
     unsigned int        rows;                               /**< Number of rows actually allocated in memory*/
     SDL_bool            swizzled;                           /**< Is image swizzled. */
     unsigned long       epochUsed;                          /**< Last epoch this image was involved in*/
-    struct PSP_TextureData*    prevhotw;                    /**< More recently used render target */
-    struct PSP_TextureData*    nexthotw;                    /**< Less recently used render target */
+    struct PSP_TextureData*    prev;                        /**< Previous texture in list */
+    struct PSP_TextureData*    next;                        /**< Next texture in list */
 } PSP_TextureData;
 
 static void PSP_UpdateEpoch(PSP_TextureData* data){
@@ -128,6 +142,11 @@ static void PSP_UpdateEpochI(SDL_Texture* tex) {
     PSP_UpdateEpoch(tex->driverdata);
 }
 
+static int
+PSP_TextureIsInFlight(PSP_TextureData* data){
+    return data->epochUsed > signaled_epoch;
+}
+
 typedef struct
 {
     SDL_BlendMode mode;
@@ -135,6 +154,12 @@ typedef struct
     int shadeModel;
     SDL_Texture* texture;
 } PSP_BlendState;
+
+typedef struct
+{
+    PSP_TextureData* head;
+    PSP_TextureData* tail;
+} PSP_TextureList;
 
 typedef struct
 {
@@ -148,8 +173,14 @@ typedef struct
 
     SDL_bool           vsync;                               /**< wether we do vsync */
     PSP_BlendState     blendState;                          /**< current blend mode */
-    PSP_TextureData*   most_recent_target;                  /**< start of render target LRU double linked list */
-    PSP_TextureData*   least_recent_target;                 /**< end of the LRU list */
+    //PSP_TextureData*   most_recent_target;                  /**< start of render target LRU double linked list */
+    //PSP_TextureData*   least_recent_target;                 /**< end of the LRU list */
+
+    PSP_TextureList    lru_targets;                         /**< render target LRU */
+    PSP_TextureList    gc_list;                             /**< garbage collection list */
+
+    //PSP_TextureData*   gc_head;
+    //PSP_TextureData*   gc_tail;
 
     SDL_bool           vblank_not_reached;                  /**< wether vblank wasn't reached */
 } PSP_RenderData;
@@ -269,51 +300,59 @@ PixelFormatToPSPFMT(Uint32 format)
 
 ///SECTION render target LRU management
 static void
-LRUTargetRelink(PSP_TextureData* psp_texture) {
-    if(psp_texture->prevhotw) {
-        psp_texture->prevhotw->nexthotw = psp_texture->nexthotw;
+ListNodeRelink(PSP_TextureData* psp_texture) {
+    if(psp_texture->prev) {
+        psp_texture->prev->next = psp_texture->next;
     }
-    if(psp_texture->nexthotw) {
-        psp_texture->nexthotw->prevhotw = psp_texture->prevhotw;
-    }
-}
-
-static void
-LRUTargetPushFront(PSP_RenderData* data, PSP_TextureData* psp_texture) {
-    psp_texture->nexthotw = data->most_recent_target;
-    if(data->most_recent_target) {
-        data->most_recent_target->prevhotw = psp_texture;
-    }
-    data->most_recent_target = psp_texture;
-    if(!data->least_recent_target) {
-        data->least_recent_target = psp_texture;
+    if(psp_texture->next) {
+        psp_texture->next->prev = psp_texture->prev;
     }
 }
 
 static void
-LRUTargetRemove(PSP_RenderData* data, PSP_TextureData* psp_texture) {
-    LRUTargetRelink(psp_texture);
-    if(data->most_recent_target == psp_texture) {
-        data->most_recent_target = psp_texture->nexthotw;
+ListNodePushFront(PSP_TextureList* list, PSP_TextureData* psp_texture) {
+    psp_texture->next = list->head;
+    if(list->head) {
+        list->head->prev = psp_texture;
     }
-    if(data->least_recent_target == psp_texture) {
-        data->least_recent_target = psp_texture->prevhotw;
+    list->head = psp_texture;
+    if(!list->tail) {
+        list->tail = psp_texture;
     }
-    psp_texture->prevhotw = NULL;
-    psp_texture->nexthotw = NULL;
 }
 
 static void
-LRUTargetBringFront(PSP_RenderData* data, PSP_TextureData* psp_texture) {
-    if(data->most_recent_target == psp_texture) {
+ListNodeRemove(PSP_TextureList* list, PSP_TextureData* psp_texture) {
+    ListNodeRelink(psp_texture);
+    if(list->head == psp_texture) {
+        list->head = psp_texture->next;
+    }
+    if(list->tail == psp_texture) {
+        list->tail = psp_texture->prev;
+    }
+    psp_texture->prev = NULL;
+    psp_texture->next = NULL;
+}
+
+static void
+ListNodeBringFront(PSP_TextureList* list, PSP_TextureData* psp_texture) {
+    if(list->head == psp_texture) {
         return; //nothing to do
     }
-    LRUTargetRemove(data, psp_texture);
-    LRUTargetPushFront(data, psp_texture);
+    ListNodeRemove(list, psp_texture);
+    ListNodePushFront(list, psp_texture);
 }
 
 static void
-TextureStorageFree(void* storage) {
+TextureStorageFree(void* storage, size_t size) {
+    uint32_t* pixels = storage;
+    size_t j = 0;
+    for(j=0; j < size / 4; j++){
+        pixels[j] = 0xff01ff01;
+    }
+
+    sceKernelDcacheWritebackRange(storage, size);
+
     if(InVram(storage)) {
         vfree(storage);
     } else {
@@ -341,6 +380,7 @@ TextureSwizzle(PSP_TextureData *psp_texture, void* dst)
     rowblocksadd = (rowblocks-1)<<7;
 
     src = (unsigned int*) psp_texture->data;
+    //sceKernelDcacheInvalidateRange(src, psp_texture->size);
 
     data = dst;
     if(!data) {
@@ -370,7 +410,7 @@ TextureSwizzle(PSP_TextureData *psp_texture, void* dst)
             blockaddress += rowblocksadd;
     }
 
-    TextureStorageFree(psp_texture->data);
+    TextureStorageFree(psp_texture->data, psp_texture->size);
     psp_texture->data = data;
     psp_texture->swizzled = SDL_TRUE;
 
@@ -393,6 +433,7 @@ TextureUnswizzle(PSP_TextureData *psp_texture, void* dst)
     if(!psp_texture->swizzled)
         return 1;
 
+    SDL_Log("Unswizzling %p");
     bytewidth = psp_texture->pitch;
     height = psp_texture->rows;
 
@@ -403,6 +444,8 @@ TextureUnswizzle(PSP_TextureData *psp_texture, void* dst)
     dstrow = bytewidth * 8;
 
     src = (unsigned int*) psp_texture->data;
+
+    sceKernelDcacheInvalidateRange(src, psp_texture->size);
 
     data = dst;
 
@@ -440,7 +483,7 @@ TextureUnswizzle(PSP_TextureData *psp_texture, void* dst)
         ydst += dstrow;
     }
 
-    TextureStorageFree(psp_texture->data);
+    TextureStorageFree(psp_texture->data, psp_texture->size);
 
     psp_texture->data = data;
 
@@ -489,12 +532,12 @@ TexturePromoteToVram(PSP_RenderData* data, PSP_TextureData* psp_texture, SDL_boo
 
 static int
 TextureSpillLRU(PSP_RenderData* data, size_t wanted) {
-    PSP_TextureData* lru = data->least_recent_target;
+    PSP_TextureData* lru = data->lru_targets.tail;
     if(lru) {
         if(TextureSpillToSram(data, lru) < 0) {
             return -1;
         }
-        LRUTargetRemove(data, lru);
+        ListNodeRemove(&data->lru_targets, lru);
     } else {
         // Asked to spill but there nothing to spill
         return SDL_SetError("Could not spill more VRAM to system memory. VRAM : %dKB,(%dKB), wanted %dKB", vmemavail()/1024, vlargestblock()/1024, wanted/1024);
@@ -526,7 +569,7 @@ TextureBindAsTarget(PSP_RenderData* data, PSP_TextureData* psp_texture) {
             return -1;
         }
     }
-    LRUTargetBringFront(data, psp_texture);
+    ListNodeBringFront(&data->lru_targets, psp_texture);
     sceGuDrawBufferList(psp_texture->format, vrelptr(psp_texture->data), (psp_texture->pitch*8)/psp_texture->bits);
 
     // Stencil alpha dst hack
@@ -604,7 +647,7 @@ PSP_CreateTexture(SDL_Renderer * renderer, SDL_Texture * texture)
         }
         psp_texture->data = valloc(psp_texture->size);
         if(psp_texture->data) {
-            LRUTargetPushFront(data, psp_texture);
+            ListNodePushFront(&data->lru_targets, psp_texture);
         }
     } else {
         psp_texture->data = SDL_calloc(1, psp_texture->size);
@@ -643,12 +686,15 @@ TextureActivate(SDL_Texture * texture)
     sceGuTexMode(psp_texture->format, 0, 0, psp_texture->swizzled);
     sceGuTexFilter(scaleMode, scaleMode); /* GU_NEAREST good for tile-map */
                                           /* GU_LINEAR good for scaling */
-    sceGuTexImage(0, psp_texture->textureWidth, psp_texture->textureHeight, psp_texture->textureWidth, psp_texture->data);
+    sceGuTexImage(0, psp_texture->textureWidth, psp_texture->textureHeight, (psp_texture->pitch*8)/psp_texture->bits, psp_texture->data);
 }
 
 static int
 PSP_LockTexture(SDL_Renderer * renderer, SDL_Texture * texture,
                  const SDL_Rect * rect, void **pixels, int *pitch);
+
+static void
+PSP_UnlockTexture(SDL_Renderer* renderer, SDL_Texture* texture);
 
 static int
 PSP_UpdateTexture(SDL_Renderer * renderer, SDL_Texture * texture,
@@ -672,7 +718,10 @@ PSP_UpdateTexture(SDL_Renderer * renderer, SDL_Texture * texture,
         }
     }
 
-    sceKernelDcacheWritebackRange(psp_texture->data, psp_texture->size);
+    psp_texture->swizzled = SDL_FALSE;
+
+    //sceKernelDcacheWritebackRange(psp_texture->data, psp_texture->size);
+    PSP_UnlockTexture(renderer, texture);
     return 0;
 }
 
@@ -692,7 +741,7 @@ PSP_LockTexture(SDL_Renderer * renderer, SDL_Texture * texture,
 static void
 PSP_UnlockTexture(SDL_Renderer * renderer, SDL_Texture * texture)
 {
-    //PSP_TextureData *psp_texture = (PSP_TextureData *) texture->driverdata;
+    PSP_TextureData *psp_texture = (PSP_TextureData *) texture->driverdata;
     //SDL_Rect rect;
 
     /* We do whole texture updates, at least for now */
@@ -702,6 +751,7 @@ PSP_UnlockTexture(SDL_Renderer * renderer, SDL_Texture * texture)
     //rect.h = texture->h;
     //PSP_UpdateTexture(renderer, texture, &rect, psp_texture->data, psp_texture->pitch);
     // TODO this should stay no-op
+    sceKernelDcacheWritebackRange(psp_texture->data, psp_texture->size);
 }
 
 static void
@@ -1315,6 +1365,9 @@ PSP_RenderReadPixels(SDL_Renderer * renderer, const SDL_Rect * rect,
 }
 
 static void
+PSP_GCFreeNotInFlight(PSP_RenderData* renderdata);
+
+static void
 PSP_RenderPresent(SDL_Renderer * renderer)
 {
     PSP_RenderData *data = (PSP_RenderData *) renderer->driverdata;
@@ -1325,6 +1378,7 @@ PSP_RenderPresent(SDL_Renderer * renderer)
     sceGuFinish();
     sceGuSync(0,0);
 
+    PSP_GCFreeNotInFlight(data);
     if ((data->vsync) && (data->vblank_not_reached))
         sceDisplayWaitVblankStart();
     data->vblank_not_reached = SDL_TRUE;
@@ -1332,6 +1386,29 @@ PSP_RenderPresent(SDL_Renderer * renderer)
     data->backbuffer = data->frontbuffer;
     data->frontbuffer = vabsptr(sceGuSwapBuffers());
 
+}
+
+static void
+PSP_DestroyImpl(PSP_RenderData* renderdata, PSP_TextureData* psp_texture)
+{
+    TextureStorageFree(psp_texture->data, psp_texture->size);
+    SDL_free(psp_texture);
+}
+
+static void
+PSP_GCFreeNotInFlight(PSP_RenderData* renderdata){
+    PSP_TextureData* node = renderdata->gc_list.tail;
+    PSP_TextureData* curr = NULL;
+    //SDL_Log("======== GC free =========");
+    while(node != NULL) {
+        //SDL_Log("%p", node);
+        curr = node;
+        node = node->prev;
+        if(!PSP_TextureIsInFlight(curr)) {
+            ListNodeRemove(&renderdata->gc_list, curr);
+            PSP_DestroyImpl(renderdata, curr);
+        }
+    }
 }
 
 static void
@@ -1346,10 +1423,19 @@ PSP_DestroyTexture(SDL_Renderer * renderer, SDL_Texture * texture)
     if(psp_texture == 0)
         return;
 
-    PSP_WaitForEpoch(psp_texture->epochUsed);
-    LRUTargetRemove(renderdata, psp_texture);
-    TextureStorageFree(psp_texture->data);
-    SDL_free(psp_texture);
+    ListNodeRemove(&renderdata->lru_targets, psp_texture);
+
+    if(PSP_TextureIsInFlight(psp_texture)){
+        // Texture is in use, schedule deletion of the implementation for later
+        ListNodePushFront(&renderdata->gc_list, psp_texture);
+    } else {
+        // Not used anymore, destroy now
+        PSP_DestroyImpl(renderdata, psp_texture);
+    }
+
+    //Do a GC pass to free older resources that are not anymore in flight
+    //PSP_GCFreeNotInFlight(renderdata);
+
     texture->driverdata = NULL;
     if(renderdata->boundTarget == texture){
         renderdata->boundTarget = NULL;
@@ -1447,8 +1533,8 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
         return 0;
     data->initialized = SDL_TRUE;
 
-    data->most_recent_target = NULL;
-    data->least_recent_target = NULL;
+    //data->lru_targets = NULL;
+    //data->gc_list = NULL;
 
     if (flags & SDL_RENDERER_PRESENTVSYNC) {
         data->vsync = SDL_TRUE;
