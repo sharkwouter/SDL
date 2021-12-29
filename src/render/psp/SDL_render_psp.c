@@ -918,7 +918,7 @@ PSP_QueueCopy(SDL_Renderer * renderer, SDL_RenderCommand *cmd, SDL_Texture * tex
                 return -1;
             }
 
-            cmd->data.draw.count = 1;
+            cmd->data.draw.count = 2;
 
             verts->u = u0;
             verts->v = v0;
@@ -948,7 +948,7 @@ PSP_QueueCopy(SDL_Renderer * renderer, SDL_RenderCommand *cmd, SDL_Texture * tex
             if(ustep < 0.0f)
                 ustep = -ustep;
 
-            cmd->data.draw.count = count;
+            cmd->data.draw.count = count*2;
 
             verts = (VertTV *) SDL_AllocateRenderVertices(renderer, count * 2 * sizeof (VertTV), 4, &cmd->data.draw.first);
             if (!verts) {
@@ -1196,15 +1196,15 @@ PSP_CmdDrawState(const SDL_RenderCommand* cmd)
     switch(cmd->command){
     case SDL_RENDERCMD_DRAW_LINES:
         primitiveType = GU_LINE_STRIP;
-        vertexShape = GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        vertexShape = GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
         break;
     case SDL_RENDERCMD_DRAW_POINTS:
         primitiveType = GU_POINTS;
-        vertexShape = GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        vertexShape = GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
         break;
     case SDL_RENDERCMD_FILL_RECTS:
         primitiveType = GU_SPRITES;
-        vertexShape = GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        vertexShape = GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
         break;
     case SDL_RENDERCMD_COPY:
         primitiveType = GU_SPRITES;
@@ -1215,6 +1215,9 @@ PSP_CmdDrawState(const SDL_RenderCommand* cmd)
         primitiveType = GU_TRIANGLES;
         vertexShape = GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
         break;
+    default:
+        primitiveType = -1;
+        vertexShape = -1;
     }
     {
         PSP_DrawState ds = {
@@ -1228,7 +1231,7 @@ PSP_CmdDrawState(const SDL_RenderCommand* cmd)
 
 static int
 PSP_BatchableStates(const PSP_DrawState* a, const PSP_DrawState* b){
-    return memcmp(a,b, sizeof(PSP_DrawState));
+    return memcmp(a,b, sizeof(PSP_DrawState)) == 0;
 }
 
 static int
@@ -1236,6 +1239,33 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
 {
     PSP_RenderData *data = (PSP_RenderData *) renderer->driverdata;
     Uint8 *gpumem = NULL;
+    PSP_DrawState resetDs = {
+        .bstate = {
+            .color = -1,
+            .texture = NULL,
+            .mode = SDL_BLENDMODE_INVALID,
+            .shadeModel = -1
+        },
+        .primitiveType = -1,
+        .vertexShape = -1
+    };
+    PSP_DrawState currDs = resetDs;
+    size_t vCount = 0; //Number of batched vertices
+    void* verts = NULL;
+    // GCC inner function ?
+    void flush() {
+        if(vCount && verts) {
+            //SDL_Log("Flushing %d vertices", vCount);
+            PSP_SetBlendState(data, &currDs.bstate);
+            sceGuDrawArray(currDs.primitiveType, currDs.vertexShape, vCount, NULL, verts);
+            if(currDs.bstate.texture){
+                PSP_UpdateEpochI(currDs.bstate.texture);
+            }
+        }
+        vCount = 0;
+        verts = NULL;
+    }
+
     StartDrawing(renderer);
 
     /* note that before the renderer interface change, this would do extrememly small
@@ -1249,6 +1279,8 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
         return SDL_SetError("Couldn't obtain a %d-byte vertex buffer!", (int) vertsize);
     }
     SDL_memcpy(gpumem, vertices, vertsize);
+    verts = gpumem;
+
 
     while (cmd) {
         switch (cmd->command) {
@@ -1287,57 +1319,23 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
             break;
         }
 
-        case SDL_RENDERCMD_DRAW_POINTS: {
-            const size_t count = cmd->data.draw.count;
-            const VertV *verts = (VertV *) (gpumem + cmd->data.draw.first);
-            PSP_SetBlendStateFromCmd(data, cmd);
-            sceGuDrawArray(GU_POINTS, GU_VERTEX_32BITF|GU_TRANSFORM_2D, count, 0, verts);
-            break;
-        }
-
-        case SDL_RENDERCMD_DRAW_LINES: {
-            const size_t count = cmd->data.draw.count;
-            const VertV *verts = (VertV *) (gpumem + cmd->data.draw.first);
-            PSP_SetBlendStateFromCmd(data, cmd);
-            sceGuDrawArray(GU_LINE_STRIP, GU_VERTEX_32BITF|GU_TRANSFORM_2D, count, 0, verts);
-            break;
-        }
-
-        case SDL_RENDERCMD_FILL_RECTS: {
-            const size_t count = cmd->data.draw.count;
-            const VertV *verts = (VertV *) (gpumem + cmd->data.draw.first);
-            PSP_SetBlendStateFromCmd(data, cmd);
-            sceGuDrawArray(GU_SPRITES, GU_VERTEX_32BITF|GU_TRANSFORM_2D, 2 * count, 0, verts);
-            break;
-        }
-
-        case SDL_RENDERCMD_COPY: {
-            const size_t count = cmd->data.draw.count;
-            const VertTV *verts = (VertTV *) (gpumem + cmd->data.draw.first);
-            PSP_SetBlendStateFromCmd(data, cmd);
-            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF|GU_VERTEX_32BITF|GU_TRANSFORM_2D, 2 * count, 0, verts);
-            PSP_UpdateEpochI(cmd->data.draw.texture);
-            break;
-        }
-
-        case SDL_RENDERCMD_COPY_EX: {
-            const size_t count = cmd->data.draw.count;
-            const VertTV *verts = (VertTV *) (gpumem + cmd->data.draw.first);
-            PSP_SetBlendStateFromCmd(data, cmd);
-            sceGuDrawArray(GU_TRIANGLE_FAN, GU_TEXTURE_32BITF|GU_VERTEX_32BITF|GU_TRANSFORM_2D, 4, 0, verts);
-            PSP_UpdateEpochI(cmd->data.draw.texture);
-            break;
-        }
-
+        case SDL_RENDERCMD_DRAW_POINTS:
+        case SDL_RENDERCMD_DRAW_LINES:
+        case SDL_RENDERCMD_FILL_RECTS:
+        case SDL_RENDERCMD_COPY:
+        case SDL_RENDERCMD_COPY_EX:
         case SDL_RENDERCMD_GEOMETRY: {
-            const size_t count = cmd->data.draw.count;
-            void* verts = gpumem + cmd->data.draw.first;
-            int vertex_shape = cmd->data.draw.texture ?
-                GU_TEXTURE_32BITF|GU_COLOR_8888|GU_VERTEX_32BITF|GU_TRANSFORM_2D :
-                GU_COLOR_8888|GU_VERTEX_32BITF|GU_TRANSFORM_2D;
-            PSP_SetBlendStateFromCmd(data, cmd);
-            sceGuDrawArray(GU_TRIANGLES, vertex_shape, count, 0, verts);
-            break;
+            PSP_DrawState cmdDs = PSP_CmdDrawState(cmd);
+
+            if(!PSP_BatchableStates(&currDs, &cmdDs)) {
+                flush();
+                currDs = cmdDs;
+                verts = gpumem + cmd->data.draw.first;
+                vCount = cmd->data.draw.count;
+            } else {
+                //SDL_Log("Adding %d vertices to batch", cmd->data.draw.count);
+                vCount += cmd->data.draw.count;
+            }
         }
 
         case SDL_RENDERCMD_NO_OP:
@@ -1347,6 +1345,10 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
         cmd = cmd->next;
     }
 
+    //Do a last flush
+    flush();
+
+    // Tag the end of this epoch time slice
     PSP_IncreaseEpoch();
     return 0;
 }
