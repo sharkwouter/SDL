@@ -11,11 +11,11 @@
   freely, subject to the following restrictions:
 
   1. The origin of this software must not be misrepresented; you must not
-     claim that you wrote the original software. If you use this software
-     in a product, an acknowledgment in the product documentation would be
-     appreciated but is not required.
+  claim that you wrote the original software. If you use this software
+  in a product, an acknowledgment in the product documentation would be
+  appreciated but is not required.
   2. Altered source versions must be plainly marked as such, and must not be
-     misrepresented as being the original software.
+  misrepresented as being the original software.
   3. This notice may not be removed or altered from any source distribution.
 */
 #include "../../SDL_internal.h"
@@ -70,24 +70,21 @@ void PSP_epoch_signal_callback(int cmd){
         //SDL_SemPost(signaled_semaphore);
     }
 }
-extern void sendCommandi(int cmd, int argument);
-extern void sendCommandiStall(int cmd, int argument);
 
 static void sendDrawSyncSignal(int argument){
     int signal = 0x08;
 
     // Mandatory CMD order : SIG END FIN END
-    sendCommandi(14,((signal & 0xff) << 16) | (argument & 0xffff));
-    sendCommandi(12,0);
-		sendCommandi(15,0);
-		sendCommandi(12,0);
-    sendCommandiStall(0,0);
+    sceGuSendCommandi(14,((signal & 0xff) << 16) | (argument & 0xffff));
+    sceGuSendCommandi(12,0);
+    sceGuSendCommandi(15,0);
+    sceGuSendCommandi(12,0);
 }
 
 static void PSP_IncreaseEpoch(){
     // Record a signal DRAW_SYNC
-    sendDrawSyncSignal(1);
-    sceGuSignal(GU_BEHAVIOR_SUSPEND, 1);
+    sendDrawSyncSignal(1); // Waits for drawing to be done
+    sceGuSignal(GU_BEHAVIOR_CONTINUE, 1); // Signal by interrupt
     recording_epoch++;
 }
 
@@ -223,10 +220,10 @@ MathAbs(float x)
     float result;
 
     __asm__ volatile (
-        "mtv      %1, S000\n"
-        "vabs.s   S000, S000\n"
-        "mfv      %0, S000\n"
-    : "=r"(result) : "r"(x));
+                      "mtv      %1, S000\n"
+                      "vabs.s   S000, S000\n"
+                      "mfv      %0, S000\n"
+                      : "=r"(result) : "r"(x));
 
     return result;
 }
@@ -235,13 +232,13 @@ static void
 MathSincos(float r, float *s, float *c)
 {
     __asm__ volatile (
-        "mtv      %2, S002\n"
-        "vcst.s   S003, VFPU_2_PI\n"
-        "vmul.s   S002, S002, S003\n"
-        "vrot.p   C000, S002, [s, c]\n"
-        "mfv      %0, S000\n"
-        "mfv      %1, S001\n"
-    : "=r"(*s), "=r"(*c): "r"(r));
+                      "mtv      %2, S002\n"
+                      "vcst.s   S003, VFPU_2_PI\n"
+                      "vmul.s   S002, S002, S003\n"
+                      "vrot.p   C000, S002, [s, c]\n"
+                      "mfv      %0, S000\n"
+                      "mfv      %1, S001\n"
+                      : "=r"(*s), "=r"(*c): "r"(r));
 }
 
 static void
@@ -274,8 +271,8 @@ TextureNextPow2(unsigned int w)
 
 static void psp_on_vblank(u32 sub, PSP_RenderData *data)
 {
-   if (data)
-      data->vblank_not_reached = SDL_FALSE;
+    if (data)
+        data->vblank_not_reached = SDL_FALSE;
 }
 
 
@@ -384,23 +381,23 @@ TextureSwizzle(PSP_TextureData *psp_texture, void* dst)
     }
 
     for(j = 0; j < height; j++, blockaddress += 16)
-    {
-        unsigned int *block;
-
-        block = (unsigned int*)&data[blockaddress];
-
-        for(i = 0; i < rowblocks; i++)
         {
-            *block++ = *src++;
-            *block++ = *src++;
-            *block++ = *src++;
-            *block++ = *src++;
-            block += 28;
-        }
+            unsigned int *block;
 
-        if((j & 0x7) == 0x7)
-            blockaddress += rowblocksadd;
-    }
+            block = (unsigned int*)&data[blockaddress];
+
+            for(i = 0; i < rowblocks; i++)
+                {
+                    *block++ = *src++;
+                    *block++ = *src++;
+                    *block++ = *src++;
+                    *block++ = *src++;
+                    block += 28;
+                }
+
+            if((j & 0x7) == 0x7)
+                blockaddress += rowblocksadd;
+        }
 
     TextureStorageFree(psp_texture->data, psp_texture->size);
     psp_texture->data = data;
@@ -451,29 +448,29 @@ TextureUnswizzle(PSP_TextureData *psp_texture, void* dst)
     ydst = (unsigned char *)data;
 
     for(blocky = 0; blocky < heightblocks; ++blocky)
-    {
-        unsigned char *xdst = ydst;
-
-        for(blockx = 0; blockx < widthblocks; ++blockx)
         {
-            unsigned int *block;
+            unsigned char *xdst = ydst;
 
-            block = (unsigned int*)xdst;
+            for(blockx = 0; blockx < widthblocks; ++blockx)
+                {
+                    unsigned int *block;
 
-            for(j = 0; j < 8; ++j)
-            {
-                *(block++) = *(src++);
-                *(block++) = *(src++);
-                *(block++) = *(src++);
-                *(block++) = *(src++);
-                block += dstpitch;
-            }
+                    block = (unsigned int*)xdst;
 
-            xdst += 16;
+                    for(j = 0; j < 8; ++j)
+                        {
+                            *(block++) = *(src++);
+                            *(block++) = *(src++);
+                            *(block++) = *(src++);
+                            *(block++) = *(src++);
+                            block += dstpitch;
+                        }
+
+                    xdst += 16;
+                }
+
+            ydst += dstrow;
         }
-
-        ydst += dstrow;
-    }
 
     TextureStorageFree(psp_texture->data, psp_texture->size);
 
@@ -607,7 +604,7 @@ PSP_CreateTexture(SDL_Renderer * renderer, SDL_Texture * texture)
     psp_texture->epochUsed = 0;
 
     switch(psp_texture->format)
-    {
+        {
         case GU_PSM_T8:
             psp_texture->bits = 8;
             break;
@@ -623,7 +620,7 @@ PSP_CreateTexture(SDL_Renderer * renderer, SDL_Texture * texture)
 
         default:
             return -1;
-    }
+        }
 
     psp_texture->pitch = psp_texture->textureWidth * SDL_BYTESPERPIXEL(texture->format);
 
@@ -646,10 +643,10 @@ PSP_CreateTexture(SDL_Renderer * renderer, SDL_Texture * texture)
     }
 
     if(!psp_texture->data)
-    {
-        SDL_free(psp_texture);
-        return SDL_OutOfMemory();
-    }
+        {
+            SDL_free(psp_texture);
+            return SDL_OutOfMemory();
+        }
     texture->driverdata = psp_texture;
 
     return 0;
@@ -659,7 +656,7 @@ static int
 TextureShouldSwizzle(PSP_TextureData* psp_texture, SDL_Texture *texture)
 {
     return !((texture->access == SDL_TEXTUREACCESS_TARGET) && InVram(psp_texture->data))
-             && (texture->w >= 16 || texture->h >= 16);
+        && (texture->w >= 16 || texture->h >= 16);
 }
 
 static void
@@ -670,9 +667,9 @@ TextureActivate(SDL_Texture * texture)
 
     /* Swizzling is useless with small textures. */
     if (TextureShouldSwizzle(psp_texture, texture))
-    {
-        TextureSwizzle(psp_texture, NULL);
-    }
+        {
+            TextureSwizzle(psp_texture, NULL);
+        }
 
     sceGuTexWrap(GU_REPEAT, GU_REPEAT);
     sceGuTexMode(psp_texture->format, 0, 0, psp_texture->swizzled);
@@ -683,14 +680,14 @@ TextureActivate(SDL_Texture * texture)
 
 static int
 PSP_LockTexture(SDL_Renderer * renderer, SDL_Texture * texture,
-                 const SDL_Rect * rect, void **pixels, int *pitch);
+                const SDL_Rect * rect, void **pixels, int *pitch);
 
 static void
 PSP_UnlockTexture(SDL_Renderer* renderer, SDL_Texture* texture);
 
 static int
 PSP_UpdateTexture(SDL_Renderer * renderer, SDL_Texture * texture,
-                   const SDL_Rect * rect, const void *pixels, int pitch)
+                  const SDL_Rect * rect, const void *pixels, int pitch)
 {
     PSP_TextureData *psp_texture = (PSP_TextureData *) texture->driverdata;
     const Uint8 *src;
@@ -719,7 +716,7 @@ PSP_UpdateTexture(SDL_Renderer * renderer, SDL_Texture * texture,
 
 static int
 PSP_LockTexture(SDL_Renderer * renderer, SDL_Texture * texture,
-                 const SDL_Rect * rect, void **pixels, int *pitch)
+                const SDL_Rect * rect, void **pixels, int *pitch)
 {
     PSP_TextureData *psp_texture = (PSP_TextureData *) texture->driverdata;
 
@@ -787,9 +784,9 @@ PSP_QueueDrawPoints(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_F
 
 static int
 PSP_QueueGeometry(SDL_Renderer *renderer, SDL_RenderCommand *cmd, SDL_Texture *texture,
-        const float *xy, int xy_stride, const SDL_Color *color, int color_stride, const float *uv, int uv_stride,
-        int num_vertices, const void *indices, int num_indices, int size_indices,
-        float scale_x, float scale_y)
+                  const float *xy, int xy_stride, const SDL_Color *color, int color_stride, const float *uv, int uv_stride,
+                  int num_vertices, const void *indices, int num_indices, int size_indices,
+                  float scale_x, float scale_y)
 {
     int i;
     int count = indices ? num_indices : num_vertices;
@@ -901,7 +898,7 @@ PSP_QueueFillRects(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_FR
 
 static int
 PSP_QueueCopy(SDL_Renderer * renderer, SDL_RenderCommand *cmd, SDL_Texture * texture,
-             const SDL_Rect * srcrect, const SDL_FRect * dstrect)
+              const SDL_Rect * srcrect, const SDL_FRect * dstrect)
 {
     VertTV *verts;
     const float x = dstrect->x;
@@ -915,83 +912,83 @@ PSP_QueueCopy(SDL_Renderer * renderer, SDL_RenderCommand *cmd, SDL_Texture * tex
     const float v1 = srcrect->y + srcrect->h;
 
     if((MathAbs(u1) - MathAbs(u0)) < 64.0f)
-    {
-        verts = (VertTV *) SDL_AllocateRenderVertices(renderer, 2 * sizeof (VertTV), 4, &cmd->data.draw.first);
-        if (!verts) {
-            return -1;
-        }
-
-        cmd->data.draw.count = 1;
-
-        verts->u = u0;
-        verts->v = v0;
-        verts->x = x;
-        verts->y = y;
-        verts->z = 0;
-        verts++;
-
-        verts->u = u1;
-        verts->v = v1;
-        verts->x = x + width;
-        verts->y = y + height;
-        verts->z = 0;
-        verts++;
-    }
-    else
-    {
-        float start, end;
-        float curU = u0;
-        float curX = x;
-        const float endX = x + width;
-        const float slice = 64.0f;
-        const size_t count = SDL_ceilf(width / slice);
-        size_t i;
-        float ustep = (u1 - u0)/width * slice;
-
-        if(ustep < 0.0f)
-            ustep = -ustep;
-
-        cmd->data.draw.count = count;
-
-        verts = (VertTV *) SDL_AllocateRenderVertices(renderer, count * 2 * sizeof (VertTV), 4, &cmd->data.draw.first);
-        if (!verts) {
-            return -1;
-        }
-
-
-        for(i = 0, start = 0, end = width; i < count; i++, start += slice)
         {
-            const float polyWidth = ((curX + slice) > endX) ? (endX - curX) : slice;
-            const float sourceWidth = ((curU + ustep) > u1) ? (u1 - curU) : ustep;
+            verts = (VertTV *) SDL_AllocateRenderVertices(renderer, 2 * sizeof (VertTV), 4, &cmd->data.draw.first);
+            if (!verts) {
+                return -1;
+            }
 
-            SDL_assert(start < end);
+            cmd->data.draw.count = 1;
 
-            verts->u = curU;
+            verts->u = u0;
             verts->v = v0;
-            verts->x = curX;
+            verts->x = x;
             verts->y = y;
             verts->z = 0;
             verts++;
 
-            curU += sourceWidth;
-            curX += polyWidth;
-
-            verts->u = curU;
+            verts->u = u1;
             verts->v = v1;
-            verts->x = curX;
-            verts->y = (y + height);
+            verts->x = x + width;
+            verts->y = y + height;
             verts->z = 0;
             verts++;
         }
-    }
+    else
+        {
+            float start, end;
+            float curU = u0;
+            float curX = x;
+            const float endX = x + width;
+            const float slice = 64.0f;
+            const size_t count = SDL_ceilf(width / slice);
+            size_t i;
+            float ustep = (u1 - u0)/width * slice;
+
+            if(ustep < 0.0f)
+                ustep = -ustep;
+
+            cmd->data.draw.count = count;
+
+            verts = (VertTV *) SDL_AllocateRenderVertices(renderer, count * 2 * sizeof (VertTV), 4, &cmd->data.draw.first);
+            if (!verts) {
+                return -1;
+            }
+
+
+            for(i = 0, start = 0, end = width; i < count; i++, start += slice)
+                {
+                    const float polyWidth = ((curX + slice) > endX) ? (endX - curX) : slice;
+                    const float sourceWidth = ((curU + ustep) > u1) ? (u1 - curU) : ustep;
+
+                    SDL_assert(start < end);
+
+                    verts->u = curU;
+                    verts->v = v0;
+                    verts->x = curX;
+                    verts->y = y;
+                    verts->z = 0;
+                    verts++;
+
+                    curU += sourceWidth;
+                    curX += polyWidth;
+
+                    verts->u = curU;
+                    verts->v = v1;
+                    verts->x = curX;
+                    verts->y = (y + height);
+                    verts->z = 0;
+                    verts++;
+                }
+        }
 
     return 0;
 }
 
 static int
 PSP_QueueCopyEx(SDL_Renderer * renderer, SDL_RenderCommand *cmd, SDL_Texture * texture,
-               const SDL_Rect * srcrect, const SDL_FRect * dstrect,
-               const double angle, const SDL_FPoint *center, const SDL_RendererFlip flip)
+                const SDL_Rect * srcrect, const SDL_FRect * dstrect,
+                const double angle, const SDL_FPoint *center, const SDL_RendererFlip flip)
 {
     VertTV *verts = (VertTV *) SDL_AllocateRenderVertices(renderer, 4 * sizeof (VertTV), 4, &cmd->data.draw.first);
     const float centerx = center->x;
@@ -1164,6 +1161,76 @@ PSP_SetBlendState(PSP_RenderData* data, PSP_BlendState* state)
     *current = *state;
 }
 
+static PSP_BlendState
+PSP_CmdBlendState(const SDL_RenderCommand* cmd){
+    const Uint8 r = cmd->data.draw.r;
+    const Uint8 g = cmd->data.draw.g;
+    const Uint8 b = cmd->data.draw.b;
+    const Uint8 a = cmd->data.draw.a;
+    PSP_BlendState state = {
+        .color = GU_RGBA(r,g,b,a),
+        .texture = cmd->data.draw.texture,
+        .mode = cmd->data.draw.blend,
+        .shadeModel = GU_FLAT
+    };
+    return state;
+}
+
+static void
+PSP_SetBlendStateFromCmd(PSP_RenderData* data, const SDL_RenderCommand* cmd){
+    PSP_BlendState state = PSP_CmdBlendState(cmd);
+    PSP_SetBlendState(data, &state);
+}
+
+typedef struct{
+    PSP_BlendState bstate;
+    int primitiveType;
+    int vertexShape;
+} PSP_DrawState;
+
+static PSP_DrawState
+PSP_CmdDrawState(const SDL_RenderCommand* cmd)
+{
+    int primitiveType = 0;
+    int vertexShape = 0;
+    switch(cmd->command){
+    case SDL_RENDERCMD_DRAW_LINES:
+        primitiveType = GU_LINE_STRIP;
+        vertexShape = GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        break;
+    case SDL_RENDERCMD_DRAW_POINTS:
+        primitiveType = GU_POINTS;
+        vertexShape = GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        break;
+    case SDL_RENDERCMD_FILL_RECTS:
+        primitiveType = GU_SPRITES;
+        vertexShape = GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        break;
+    case SDL_RENDERCMD_COPY:
+        primitiveType = GU_SPRITES;
+        vertexShape = GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        break;
+    case SDL_RENDERCMD_GEOMETRY:
+    case SDL_RENDERCMD_COPY_EX:
+        primitiveType = GU_TRIANGLES;
+        vertexShape = GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D;
+        break;
+    }
+    {
+        PSP_DrawState ds = {
+            .bstate = PSP_CmdBlendState(cmd),
+            .primitiveType = primitiveType,
+            .vertexShape = vertexShape
+        };
+        return ds;
+    }
+}
+
+static int
+PSP_BatchableStates(const PSP_DrawState* a, const PSP_DrawState* b){
+    return memcmp(a,b, sizeof(PSP_DrawState));
+}
+
 static int
 PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *vertices, size_t vertsize)
 {
@@ -1185,161 +1252,96 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
 
     while (cmd) {
         switch (cmd->command) {
-            case SDL_RENDERCMD_SETDRAWCOLOR: {
-                break;  /* !!! FIXME: we could cache drawstate like color */
-            }
+        case SDL_RENDERCMD_SETDRAWCOLOR: {
+            break;  /* !!! FIXME: we could cache drawstate like color */
+        }
 
-            case SDL_RENDERCMD_SETVIEWPORT: {
-                SDL_Rect *viewport = &cmd->data.viewport.rect;
-                sceGuOffset(2048 - (viewport->w >> 1), 2048 - (viewport->h >> 1));
-                sceGuViewport(2048, 2048, viewport->w, viewport->h);
+        case SDL_RENDERCMD_SETVIEWPORT: {
+            SDL_Rect *viewport = &cmd->data.viewport.rect;
+            sceGuOffset(2048 - (viewport->w >> 1), 2048 - (viewport->h >> 1));
+            sceGuViewport(2048, 2048, viewport->w, viewport->h);
+            sceGuEnable(GU_SCISSOR_TEST);
+            sceGuScissor(viewport->x, viewport->y, viewport->w, viewport->h);
+            break;
+        }
+
+        case SDL_RENDERCMD_SETCLIPRECT: {
+            const SDL_Rect *rect = &cmd->data.cliprect.rect;
+            if(cmd->data.cliprect.enabled){
                 sceGuEnable(GU_SCISSOR_TEST);
-                sceGuScissor(viewport->x, viewport->y, viewport->w, viewport->h);
-                break;
+                sceGuScissor(rect->x, rect->y, rect->w, rect->h);
+            } else if(!data->boundTarget) {
+                sceGuDisable(GU_SCISSOR_TEST);
             }
+            break;
+        }
 
-            case SDL_RENDERCMD_SETCLIPRECT: {
-                const SDL_Rect *rect = &cmd->data.cliprect.rect;
-                if(cmd->data.cliprect.enabled){
-                    sceGuEnable(GU_SCISSOR_TEST);
-                    sceGuScissor(rect->x, rect->y, rect->w, rect->h);
-                } else if(!data->boundTarget) {
-                    sceGuDisable(GU_SCISSOR_TEST);
-                }
-                break;
-            }
+        case SDL_RENDERCMD_CLEAR: {
+            const Uint8 r = cmd->data.color.r;
+            const Uint8 g = cmd->data.color.g;
+            const Uint8 b = cmd->data.color.b;
+            const Uint8 a = cmd->data.color.a;
+            sceGuClearColor(GU_RGBA(r,g,b,a));
+            sceGuClearStencil(a);
+            sceGuClear(GU_COLOR_BUFFER_BIT | GU_STENCIL_BUFFER_BIT);
+            break;
+        }
 
-            case SDL_RENDERCMD_CLEAR: {
-                const Uint8 r = cmd->data.color.r;
-                const Uint8 g = cmd->data.color.g;
-                const Uint8 b = cmd->data.color.b;
-                const Uint8 a = cmd->data.color.a;
-                sceGuClearColor(GU_RGBA(r,g,b,a));
-                sceGuClearStencil(a);
-                sceGuClear(GU_COLOR_BUFFER_BIT | GU_STENCIL_BUFFER_BIT);
-                break;
-            }
+        case SDL_RENDERCMD_DRAW_POINTS: {
+            const size_t count = cmd->data.draw.count;
+            const VertV *verts = (VertV *) (gpumem + cmd->data.draw.first);
+            PSP_SetBlendStateFromCmd(data, cmd);
+            sceGuDrawArray(GU_POINTS, GU_VERTEX_32BITF|GU_TRANSFORM_2D, count, 0, verts);
+            break;
+        }
 
-            case SDL_RENDERCMD_DRAW_POINTS: {
-                const size_t count = cmd->data.draw.count;
-                const VertV *verts = (VertV *) (gpumem + cmd->data.draw.first);
-                const Uint8 r = cmd->data.draw.r;
-                const Uint8 g = cmd->data.draw.g;
-                const Uint8 b = cmd->data.draw.b;
-                const Uint8 a = cmd->data.draw.a;
-                PSP_BlendState state = {
-                    .color = GU_RGBA(r,g,b,a),
-                    .texture = NULL,
-                    .mode = cmd->data.draw.blend,
-                    .shadeModel = GU_FLAT
-                };
-                PSP_SetBlendState(data, &state);
-                sceGuDrawArray(GU_POINTS, GU_VERTEX_32BITF|GU_TRANSFORM_2D, count, 0, verts);
-                break;
-            }
+        case SDL_RENDERCMD_DRAW_LINES: {
+            const size_t count = cmd->data.draw.count;
+            const VertV *verts = (VertV *) (gpumem + cmd->data.draw.first);
+            PSP_SetBlendStateFromCmd(data, cmd);
+            sceGuDrawArray(GU_LINE_STRIP, GU_VERTEX_32BITF|GU_TRANSFORM_2D, count, 0, verts);
+            break;
+        }
 
-            case SDL_RENDERCMD_DRAW_LINES: {
-                const size_t count = cmd->data.draw.count;
-                const VertV *verts = (VertV *) (gpumem + cmd->data.draw.first);
-                const Uint8 r = cmd->data.draw.r;
-                const Uint8 g = cmd->data.draw.g;
-                const Uint8 b = cmd->data.draw.b;
-                const Uint8 a = cmd->data.draw.a;
-                PSP_BlendState state = {
-                    .color = GU_RGBA(r,g,b,a),
-                    .texture = NULL,
-                    .mode = cmd->data.draw.blend,
-                    .shadeModel = GU_FLAT
-                };
-                PSP_SetBlendState(data, &state);
-                sceGuDrawArray(GU_LINE_STRIP, GU_VERTEX_32BITF|GU_TRANSFORM_2D, count, 0, verts);
-                break;
-            }
+        case SDL_RENDERCMD_FILL_RECTS: {
+            const size_t count = cmd->data.draw.count;
+            const VertV *verts = (VertV *) (gpumem + cmd->data.draw.first);
+            PSP_SetBlendStateFromCmd(data, cmd);
+            sceGuDrawArray(GU_SPRITES, GU_VERTEX_32BITF|GU_TRANSFORM_2D, 2 * count, 0, verts);
+            break;
+        }
 
-            case SDL_RENDERCMD_FILL_RECTS: {
-                const size_t count = cmd->data.draw.count;
-                const VertV *verts = (VertV *) (gpumem + cmd->data.draw.first);
-                const Uint8 r = cmd->data.draw.r;
-                const Uint8 g = cmd->data.draw.g;
-                const Uint8 b = cmd->data.draw.b;
-                const Uint8 a = cmd->data.draw.a;
-                PSP_BlendState state = {
-                    .color = GU_RGBA(r,g,b,a),
-                    .texture = NULL,
-                    .mode = cmd->data.draw.blend,
-                    .shadeModel = GU_FLAT
-                };
-                PSP_SetBlendState(data, &state);
-                sceGuDrawArray(GU_SPRITES, GU_VERTEX_32BITF|GU_TRANSFORM_2D, 2 * count, 0, verts);
-                break;
-            }
+        case SDL_RENDERCMD_COPY: {
+            const size_t count = cmd->data.draw.count;
+            const VertTV *verts = (VertTV *) (gpumem + cmd->data.draw.first);
+            PSP_SetBlendStateFromCmd(data, cmd);
+            sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF|GU_VERTEX_32BITF|GU_TRANSFORM_2D, 2 * count, 0, verts);
+            PSP_UpdateEpochI(cmd->data.draw.texture);
+            break;
+        }
 
-            case SDL_RENDERCMD_COPY: {
-                const size_t count = cmd->data.draw.count;
-                const VertTV *verts = (VertTV *) (gpumem + cmd->data.draw.first);
-                const Uint8 a = cmd->data.draw.a;
-                const Uint8 r = cmd->data.draw.r;
-                const Uint8 g = cmd->data.draw.g;
-                const Uint8 b = cmd->data.draw.b;
-                PSP_BlendState state = {
-                    .color = GU_RGBA(r,g,b,a),
-                    .texture = cmd->data.draw.texture,
-                    .mode = cmd->data.draw.blend,
-                    .shadeModel = GU_SMOOTH
-                };
-                PSP_SetBlendState(data, &state);
-                sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF|GU_VERTEX_32BITF|GU_TRANSFORM_2D, 2 * count, 0, verts);
-                PSP_UpdateEpochI(cmd->data.draw.texture);
-                break;
-            }
+        case SDL_RENDERCMD_COPY_EX: {
+            const size_t count = cmd->data.draw.count;
+            const VertTV *verts = (VertTV *) (gpumem + cmd->data.draw.first);
+            PSP_SetBlendStateFromCmd(data, cmd);
+            sceGuDrawArray(GU_TRIANGLE_FAN, GU_TEXTURE_32BITF|GU_VERTEX_32BITF|GU_TRANSFORM_2D, 4, 0, verts);
+            PSP_UpdateEpochI(cmd->data.draw.texture);
+            break;
+        }
 
-            case SDL_RENDERCMD_COPY_EX: {
-                const VertTV *verts = (VertTV *) (gpumem + cmd->data.draw.first);
-                const Uint8 a = cmd->data.draw.a;
-                const Uint8 r = cmd->data.draw.r;
-                const Uint8 g = cmd->data.draw.g;
-                const Uint8 b = cmd->data.draw.b;
-                PSP_BlendState state = {
-                    .color = GU_RGBA(r,g,b,a),
-                    .texture = cmd->data.draw.texture,
-                    .mode = cmd->data.draw.blend,
-                    .shadeModel = GU_SMOOTH
-                };
-                PSP_SetBlendState(data, &state);
-                sceGuDrawArray(GU_TRIANGLE_FAN, GU_TEXTURE_32BITF|GU_VERTEX_32BITF|GU_TRANSFORM_2D, 4, 0, verts);
-                PSP_UpdateEpochI(cmd->data.draw.texture);
-                break;
-            }
+        case SDL_RENDERCMD_GEOMETRY: {
+            const size_t count = cmd->data.draw.count;
+            void* verts = gpumem + cmd->data.draw.first;
+            int vertex_shape = cmd->data.draw.texture ?
+                GU_TEXTURE_32BITF|GU_COLOR_8888|GU_VERTEX_32BITF|GU_TRANSFORM_2D :
+                GU_COLOR_8888|GU_VERTEX_32BITF|GU_TRANSFORM_2D;
+            PSP_SetBlendStateFromCmd(data, cmd);
+            sceGuDrawArray(GU_TRIANGLES, vertex_shape, count, 0, verts);
+            break;
+        }
 
-            case SDL_RENDERCMD_GEOMETRY: {
-                const size_t count = cmd->data.draw.count;
-                if (cmd->data.draw.texture == NULL) {
-                    const VertCV *verts = (VertCV *) (gpumem + cmd->data.draw.first);
-                    sceGuDisable(GU_TEXTURE_2D);
-                    /* In GU_SMOOTH mode */
-                    sceGuDrawArray(GU_TRIANGLES, GU_COLOR_8888|GU_VERTEX_32BITF|GU_TRANSFORM_2D, count, 0, verts);
-                    sceGuEnable(GU_TEXTURE_2D);
-                } else {
-                    const VertTCV *verts = (VertTCV *) (gpumem + cmd->data.draw.first);
-                    const Uint8 a = cmd->data.draw.a;
-                    const Uint8 r = cmd->data.draw.r;
-                    const Uint8 g = cmd->data.draw.g;
-                    const Uint8 b = cmd->data.draw.b;
-                    PSP_BlendState state = {
-                        .color = GU_RGBA(r,g,b,a),
-                        .texture = NULL,
-                        .mode = cmd->data.draw.blend,
-                        .shadeModel = GU_FLAT
-                    };
-                    TextureActivate(cmd->data.draw.texture);
-                    PSP_SetBlendState(data, &state);
-                    sceGuDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF|GU_COLOR_8888|GU_VERTEX_32BITF|GU_TRANSFORM_2D, count, 0, verts);
-                }
-                break;
-            }
-
-            case SDL_RENDERCMD_NO_OP:
-                break;
+        case SDL_RENDERCMD_NO_OP:
+            break;
         }
 
         cmd = cmd->next;
@@ -1351,7 +1353,7 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
 
 static int
 PSP_RenderReadPixels(SDL_Renderer * renderer, const SDL_Rect * rect,
-                    Uint32 pixel_format, void * pixels, int pitch)
+                     Uint32 pixel_format, void * pixels, int pitch)
 {
     return SDL_Unsupported();
 }
@@ -1536,7 +1538,7 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
 
     pixelformat=PixelFormatToPSPFMT(SDL_GetWindowPixelFormat(window));
     switch(pixelformat)
-    {
+        {
         case GU_PSM_4444:
         case GU_PSM_5650:
         case GU_PSM_5551:
@@ -1547,7 +1549,7 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
             data->bpp = 4;
             data->psm = GU_PSM_8888;
             break;
-    }
+        }
 
     doublebuffer = valloc(PSP_FRAME_BUFFER_SIZE*data->bpp*2);
     data->backbuffer = doublebuffer;
@@ -1573,9 +1575,9 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
 
     /* Backface culling */
     /*
-    FIXME: Culling probably un-needed ? It can conflict with SDL_RENDERCMD_GEOMETRY
-    sceGuFrontFace(GU_CCW);
-    sceGuEnable(GU_CULL_FACE);
+      FIXME: Culling probably un-needed ? It can conflict with SDL_RENDERCMD_GEOMETRY
+      sceGuFrontFace(GU_CCW);
+      sceGuEnable(GU_CULL_FACE);
     */
 
     //Setup initial blend state
@@ -1609,13 +1611,13 @@ SDL_RenderDriver PSP_RenderDriver = {
         .flags = SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC | SDL_RENDERER_TARGETTEXTURE,
         .num_texture_formats = 4,
         .texture_formats = { [0] = SDL_PIXELFORMAT_BGR565,
-                                                 [1] = SDL_PIXELFORMAT_ABGR1555,
-                                                 [2] = SDL_PIXELFORMAT_ABGR4444,
-                                                 [3] = SDL_PIXELFORMAT_ABGR8888,
+            [1] = SDL_PIXELFORMAT_ABGR1555,
+            [2] = SDL_PIXELFORMAT_ABGR4444,
+            [3] = SDL_PIXELFORMAT_ABGR8888,
         },
         .max_texture_width = 512,
         .max_texture_height = 512,
-     }
+    }
 };
 
 #endif /* SDL_VIDEO_RENDER_PSP */
