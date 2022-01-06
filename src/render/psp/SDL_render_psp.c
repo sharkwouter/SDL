@@ -56,8 +56,8 @@ static unsigned long int recording_epoch = 1;
 /** Signaled epoch, every resource tagged with lower or equal epoch are no more in-flight */
 static volatile unsigned long int signaled_epoch = 0;
 
-static SDL_sem* signaled_semaphore = NULL;
-
+static SDL_cond* signaled_cond = NULL;
+static SDL_mutex* signaled_mutex = NULL;
 /**
  * Callback inserted in the display list to keep track of what the GPU is already done with
  *
@@ -66,8 +66,10 @@ static SDL_sem* signaled_semaphore = NULL;
 void PSP_epoch_signal_callback(int cmd){
     //SDL_Log("Signaled : epoch"); // DO NOT LOG IN INTERRUPT HANDLERS...
     if(cmd == 1) {
+        /* SDL_LockMutex(signaled_mutex); */
         signaled_epoch++;
-        //SDL_SemPost(signaled_semaphore);
+        /* SDL_CondBroadcast(signaled_cond); */
+        /* SDL_UnlockMutex(signaled_mutex); */
     }
 }
 
@@ -89,15 +91,21 @@ static void PSP_IncreaseEpoch(){
 }
 
 static void PSP_WaitForEpoch(unsigned long epoch) {
-    SDL_Log("Waiting for epoch %ld, signaled : %ld", epoch, signaled_epoch);
+    SDL_Log("Waiting for epoch %ld, signaled : %ld, recording : %ld", epoch, signaled_epoch, recording_epoch);
     if(signaled_epoch >= epoch) {
         return;
     }
 
-    do {
-        //SDL_SemWaitTimeout(signaled_semaphore, 1);
-        //SDL_Log("Waiting for %ld : signaled %ld", epoch, signaled_epoch);
-    } while(signaled_epoch < epoch);
+    while(epoch >= recording_epoch) {
+        //We asked to wait in the middle of an epoch, slip new epoch to unlock us
+        PSP_IncreaseEpoch();
+    }
+
+    /* SDL_LockMutex(signaled_mutex); */
+    while(signaled_epoch < epoch) {
+        /* SDL_CondWait(signaled_cond, signaled_mutex); */
+    }
+    /* SDL_UnlockMutex(signaled_mutex); */
 
     return;
 }
@@ -422,7 +430,7 @@ TextureUnswizzle(PSP_TextureData *psp_texture, void* dst)
     if(!psp_texture->swizzled)
         return 1;
 
-    SDL_Log("Unswizzling %p");
+    SDL_Log("Unswizzling %p", psp_texture);
     bytewidth = psp_texture->pitch;
     height = psp_texture->rows;
 
@@ -433,9 +441,6 @@ TextureUnswizzle(PSP_TextureData *psp_texture, void* dst)
     dstrow = bytewidth * 8;
 
     src = (unsigned int*) psp_texture->data;
-
-    sceKernelDcacheInvalidateRange(src, psp_texture->size);
-
     data = dst;
 
     if(!data) {
@@ -1252,10 +1257,9 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
     PSP_DrawState currDs = resetDs;
     size_t vCount = 0; //Number of batched vertices
     void* verts = NULL;
-    // GCC inner function ?
+
     void flush() {
         if(vCount && verts) {
-            //SDL_Log("Flushing %d vertices", vCount);
             PSP_SetBlendState(data, &currDs.bstate);
             sceGuDrawArray(currDs.primitiveType, currDs.vertexShape, vCount, NULL, verts);
             if(currDs.bstate.texture){
@@ -1333,7 +1337,6 @@ PSP_RunCommandQueue(SDL_Renderer * renderer, SDL_RenderCommand *cmd, void *verti
                 verts = gpumem + cmd->data.draw.first;
                 vCount = cmd->data.draw.count;
             } else {
-                //SDL_Log("Adding %d vertices to batch", cmd->data.draw.count);
                 vCount += cmd->data.draw.count;
             }
         }
@@ -1430,7 +1433,7 @@ PSP_DestroyTexture(SDL_Renderer * renderer, SDL_Texture * texture)
     }
 
     //Do a GC pass to free older resources that are not anymore in flight
-    //PSP_GCFreeNotInFlight(renderdata);
+    PSP_GCFreeNotInFlight(renderdata);
 
     texture->driverdata = NULL;
     if(renderdata->boundTarget == texture){
@@ -1465,7 +1468,8 @@ PSP_DestroyRenderer(SDL_Renderer * renderer)
     }
     SDL_free(renderer);
 
-    SDL_DestroySemaphore(signaled_semaphore);
+    SDL_DestroyCond(signaled_cond);
+    SDL_DestroyMutex(signaled_mutex);
 }
 
 static int
@@ -1597,11 +1601,16 @@ PSP_CreateRenderer(SDL_Window * window, Uint32 flags)
     sceKernelEnableSubIntr(PSP_VBLANK_INT, 0);
     //sceGuCallMode(1);
 
-
-    signaled_semaphore = SDL_CreateSemaphore(0);
-    if(signaled_semaphore == NULL){
+    signaled_cond = SDL_CreateCond();
+    if(signaled_cond == NULL){
         return SDL_OutOfMemory();
     }
+
+    signaled_mutex = SDL_CreateMutex();
+    if(signaled_mutex == NULL) {
+        return SDL_OutOfMemory();
+    }
+
 
     return renderer;
 }
