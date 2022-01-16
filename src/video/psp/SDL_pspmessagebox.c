@@ -71,7 +71,6 @@ int PSP_ShowMessageBox(const SDL_MessageBoxData *messageboxdata, int *buttonid)
 
     if (init_result == 0)
     {
-        sceGuInit();
         while (!done)
         {
             sceGuStart(GU_DIRECT,list);
