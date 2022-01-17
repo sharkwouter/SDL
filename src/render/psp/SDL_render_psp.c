@@ -1240,7 +1240,7 @@ PSP_CmdDrawState(const SDL_RenderCommand* cmd)
 
 static int
 PSP_BatchableStates(const PSP_DrawState* a, const PSP_DrawState* b){
-    return memcmp(a,b, sizeof(PSP_DrawState)) == 0;
+    return a->primitiveType != GU_LINE_STRIP && memcmp(a,b, sizeof(PSP_DrawState)) == 0;
 }
 
 static int
