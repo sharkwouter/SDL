@@ -425,7 +425,7 @@ TextureUnswizzle(PSP_TextureData *psp_texture, void* dst)
     if(!psp_texture->swizzled)
         return 1;
 
-    SDL_Log("Unswizzling %p", psp_texture);
+    //SDL_Log("Unswizzling %p", psp_texture);
     bytewidth = psp_texture->pitch;
     height = psp_texture->rows;
 
@@ -719,6 +719,8 @@ PSP_LockTexture(SDL_Renderer * renderer, SDL_Texture * texture,
                 const SDL_Rect * rect, void **pixels, int *pitch)
 {
     PSP_TextureData *psp_texture = (PSP_TextureData *) texture->driverdata;
+
+    TextureUnswizzle(psp_texture, NULL);
 
     *pixels =
         (void *) ((Uint8 *) psp_texture->data + rect->y * psp_texture->pitch +
