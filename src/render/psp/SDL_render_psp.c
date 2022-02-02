@@ -365,7 +365,6 @@ TextureSwizzle(PSP_TextureData *psp_texture, void* dst)
     rowblocksadd = (rowblocks-1)<<7;
 
     src = (unsigned int*) psp_texture->data;
-    //sceKernelDcacheInvalidateRange(src, psp_texture->size);
 
     data = dst;
     if(!data) {
@@ -418,7 +417,6 @@ TextureUnswizzle(PSP_TextureData *psp_texture, void* dst)
     if(!psp_texture->swizzled)
         return 1;
 
-    //SDL_Log("Unswizzling %p", psp_texture);
     bytewidth = psp_texture->pitch;
     height = psp_texture->rows;
 
@@ -889,7 +887,7 @@ PSP_QueueFillRects(SDL_Renderer * renderer, SDL_RenderCommand *cmd, const SDL_FR
 
 static int
 PSP_QueueCopy(SDL_Renderer * renderer, SDL_RenderCommand *cmd, SDL_Texture * texture,
-                const SDL_Rect * srcrect, const SDL_FRect * dstrect)
+            const SDL_Rect * srcrect, const SDL_FRect * dstrect)
 {
     VertTV *verts;
     const float x = dstrect->x;
