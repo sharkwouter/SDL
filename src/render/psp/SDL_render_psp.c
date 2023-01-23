@@ -196,7 +196,7 @@ static void PSP_UnlockTexture(SDL_Renderer *renderer, SDL_Texture *texture)
     PSP_Texture *psp_texture = (PSP_Texture *)texture->driverdata;
     PSP_RenderData *data = (PSP_RenderData *)renderer->driverdata;
 
-    // gsKit_TexManager_invalidate(data->gsGlobal, psp_texture);
+    sceKernelDcacheWritebackAll();
 }
 
 static int PSP_UpdateTexture(SDL_Renderer *renderer, SDL_Texture *texture,
@@ -407,7 +407,7 @@ static int PSP_RenderClear(SDL_Renderer *renderer, SDL_RenderCommand *cmd)
     colorA = cmd->data.color.a;
 
     sceGuClearColor(GU_RGBA(colorR, colorG, colorB, colorA));
-    sceGuClearStencil(colorA);
+    sceGuClearDepth(0);
     sceGuClear(GU_COLOR_BUFFER_BIT|GU_DEPTH_BUFFER_BIT);
 
     return 0;
@@ -566,14 +566,15 @@ static int PSP_RenderPresent(SDL_Renderer *renderer)
 {
     PSP_RenderData *data = (PSP_RenderData *)renderer->driverdata;
 
+    sceGuFinish();
+    sceGuSync(0,0);
+
     if (((data->vsync == 2) && (data->vblank_not_reached)) || // Dynamic
         (data->vsync == 1)) { // Normal VSync
         sceDisplayWaitVblankStart();
     }
     data->vblank_not_reached = SDL_TRUE;
 
-    sceGuFinish();
-    sceGuSync(0,0);
     data->backbuffer = data->frontbuffer;
     data->frontbuffer = vabsptr(sceGuSwapBuffers());
 
@@ -654,6 +655,9 @@ static SDL_Renderer *PSP_CreateRenderer(SDL_Window *window, Uint32 flags)
         return NULL;
     }
 
+    // flush cache so that no stray data remains
+    sceKernelDcacheWritebackAll();
+
     /* Specific GU init */
     bufferSize = getMemorySize(PSP_FRAME_BUFFER_WIDTH, PSP_SCREEN_HEIGHT, GU_PSM_8888);
     doublebuffer = vramalloc(bufferSize * 2);
@@ -678,6 +682,12 @@ static SDL_Renderer *PSP_CreateRenderer(SDL_Window *window, Uint32 flags)
 
 	sceDisplayWaitVblankStart();
 	sceGuDisplay(GU_TRUE);
+
+    sceGuStart(GU_DIRECT,list);
+    
+    // Clear the screen
+    sceGuClearColor(0);
+    sceGuClear(GU_COLOR_BUFFER_BIT);
 
     /* Improve performance when VSYC is enabled and it is not reaching the 60 FPS */
     dynamicVsync = SDL_GetHintBoolean(SDL_HINT_PSP_DYNAMIC_VSYNC, SDL_FALSE);
