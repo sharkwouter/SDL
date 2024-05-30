@@ -39,6 +39,7 @@
 #include "SDL_pspvideo.h"
 #include "SDL_pspevents_c.h"
 #include "SDL_pspgl_c.h"
+#include "SDL_pspmessagebox.h"
 #include "../../render/psp/SDL_render_psp.h"
 
 #define SDL_WINDOWTEXTUREDATA "_SDL_WindowTextureData"
@@ -256,7 +257,7 @@ VideoBootStrap PSP_bootstrap = {
     "PSP",
     "PSP Video Driver",
     PSP_Create,
-    NULL /* no ShowMessageBox implementation */
+    PSP_ShowMessageBox
 };
 
 /*****************************************************************************/
