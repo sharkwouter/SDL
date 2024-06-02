@@ -27,11 +27,14 @@
 #include "SDL_internal.h"
 #include "../SDL_sysvideo.h"
 
+#define PSP_INPUT_TEXT_LENGTH 128
+
 struct SDL_VideoData
 {
-    SDL_bool egl_initialized; /* OpenGL ES device initialization status */
-    uint32_t egl_refcount;    /* OpenGL ES reference count              */
-
+    SDL_bool egl_initialized; /* OpenGL ES device initialization status  */
+    uint32_t egl_refcount;    /* OpenGL ES reference count               */
+    SDL_bool ime_active;      /* If the on screen keyboard is active     */
+    uint16_t *ime_text;       /* Text received by the on screen keyboard */
 };
 
 struct SDL_WindowData

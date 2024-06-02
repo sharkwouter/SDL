@@ -32,6 +32,7 @@
 #include "SDL_pspvideo.h"
 #include "SDL_pspevents_c.h"
 #include "SDL_pspgl_c.h"
+#include <psputility.h>
 
 /* unused
 static SDL_bool PSP_initialized = SDL_FALSE;
@@ -121,6 +122,9 @@ VideoBootStrap PSP_bootstrap = {
     PSP_Create,
     NULL /* no ShowMessageBox implementation */
 };
+
+int text_length = 128;
+unsigned short *outtext = NULL;
 
 /*****************************************************************************/
 /* SDL Video and Display initialization/handling functions                   */
@@ -239,20 +243,55 @@ void PSP_DestroyWindow(SDL_VideoDevice *_this, SDL_Window *window)
 {
 }
 
-/* TO Write Me */
 SDL_bool PSP_HasScreenKeyboardSupport(SDL_VideoDevice *_this)
 {
-    return SDL_FALSE;
+    return SDL_TRUE;
 }
+
 void PSP_ShowScreenKeyboard(SDL_VideoDevice *_this, SDL_Window *window)
 {
+    SDL_VideoData *videodata = _this->driverdata;
+    if (!videodata->ime_text) {
+        videodata->ime_text = (uint16_t*)SDL_calloc(PSP_INPUT_TEXT_LENGTH, sizeof(uint16_t));
+        SDL_memset(&videodata->ime_text, 0, PSP_INPUT_TEXT_LENGTH * sizeof(uint16_t));
+    }
+
+    SceUtilityOskData data;
+    data.language = PSP_UTILITY_OSK_LANGUAGE_DEFAULT;
+    data.lines = 1;
+    data.unk_24 = 1;
+    data.inputtype = PSP_UTILITY_OSK_INPUTTYPE_ALL; // Allow all input types
+    data.desc = NULL;
+    data.intext = NULL;
+    data.outtextlength = PSP_INPUT_TEXT_LENGTH;
+    data.outtextlimit = 32; // Limit input to 32 characters
+    data.outtext = videodata->ime_text;
+
+    SceUtilityOskParams params;
+    params.base.size = sizeof(params);
+    sceUtilityGetSystemParamInt(PSP_SYSTEMPARAM_ID_INT_LANGUAGE, &params.base.language);
+    sceUtilityGetSystemParamInt(PSP_SYSTEMPARAM_ID_INT_UNKNOWN, &params.base.buttonSwap);
+    params.base.graphicsThread = 17;
+	params.base.accessThread = 19;
+	params.base.fontThread = 18;
+	params.base.soundThread = 16;
+	params.datacount = 1;
+    params.data = &data;
+
+    sceUtilityOskInitStart(&params);
+
+    videodata->ime_active = SDL_TRUE;
 }
 void PSP_HideScreenKeyboard(SDL_VideoDevice *_this, SDL_Window *window)
 {
+    sceUtilityOskShutdownStart();
+    SDL_VideoData *videodata = _this->driverdata;
+    videodata->ime_active = SDL_FALSE;
 }
 SDL_bool PSP_IsScreenKeyboardShown(SDL_VideoDevice *_this, SDL_Window *window)
 {
-    return SDL_FALSE;
+    SDL_VideoData *videodata = _this->driverdata;
+    return videodata->ime_active;
 }
 
 #endif /* SDL_VIDEO_DRIVER_PSP */

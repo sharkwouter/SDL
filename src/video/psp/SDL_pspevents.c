@@ -33,6 +33,7 @@
 #include "../../thread/SDL_systhread.h"
 #include <psphprm.h>
 #include <pspthreadman.h>
+#include <psputility.h>
 
 #ifdef PSPIRKEYB
 #include <pspirkeyb.h>
@@ -119,6 +120,24 @@ void PSP_PumpEvents(SDL_VideoDevice *_this)
         }
     }
 #endif
+
+    SDL_VideoData *videodata = _this->driverdata;
+    if (videodata->ime_active == SDL_TRUE) {
+        switch(sceUtilityOskGetStatus())
+		{
+			case PSP_UTILITY_DIALOG_VISIBLE:
+				sceUtilityOskUpdate(1);
+				break;
+			case PSP_UTILITY_DIALOG_QUIT:
+				sceUtilityOskShutdownStart();
+				break;
+			case PSP_UTILITY_DIALOG_NONE:
+				videodata->ime_active = SDL_FALSE;
+                break;
+			default :
+				break;
+		}
+    }
     sceKernelDelayThread(0);
 
     return;
