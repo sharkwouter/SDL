@@ -19,10 +19,11 @@
   3. This notice may not be removed or altered from any source distribution.
 */
 
-#include "SDL_internal.h"
+#include "../../SDL_internal.h"
 
 #ifdef SDL_VIDEO_DRIVER_PSP
 
+#include "SDL.h"
 #include "SDL_pspvideo.h"
 #include "SDL_pspmessagebox.h"
 #include <psputility.h>
@@ -51,13 +52,14 @@ static void configure_dialog(pspUtilityMsgDialogParams *dialog, size_t dialog_si
 	dialog->base.accessThread = 0x13;
 }
 
-int PSP_ShowMessageBox(const SDL_MessageBoxData *messageboxdata, int *buttonID)
+int PSP_ShowMessageBox(const SDL_MessageBoxData *messageboxdata, int *buttonid)
 {
 	pspUtilityMsgDialogParams dialog;
 	int status;
+	char render_list[0x20000] __attribute__((aligned(64)));
 
 	/* TODO: AGHHHHHhhhHH */
-	if (SDL_WasInit(SDL_INIT_VIDEO) == 0 || SDL_GL_GetCurrentContext() == NULL || SDL_GL_GetCurrentWindow() == NULL)
+	if (SDL_WasInit(SDL_INIT_VIDEO) == 0 || messageboxdata->)
 		return SDL_SetError("No video context is available");
 
 	/* configure dialog */
@@ -86,6 +88,10 @@ int PSP_ShowMessageBox(const SDL_MessageBoxData *messageboxdata, int *buttonID)
 	status = PSP_UTILITY_DIALOG_NONE;
 	do
 	{
+		sceGuStart(GU_DIRECT, render_list);
+		sceGuFinish();
+		sceGuSync(GU_SYNC_WHAT_DONE, GU_SYNC_FINISH);
+
 		status = sceUtilityMsgDialogGetStatus();
 
 		switch (status)
@@ -106,11 +112,11 @@ int PSP_ShowMessageBox(const SDL_MessageBoxData *messageboxdata, int *buttonID)
 
 	/* success */
 	if (dialog.buttonPressed == PSP_UTILITY_MSGDIALOG_RESULT_YES)
-		*buttonID = messageboxdata->buttons[0].buttonID;
+		*buttonid = messageboxdata->buttons[0].buttonid;
 	else if (dialog.buttonPressed == PSP_UTILITY_MSGDIALOG_RESULT_NO)
-		*buttonID = messageboxdata->buttons[1].buttonID;
+		*buttonid = messageboxdata->buttons[1].buttonid;
 	else
-		*buttonID = messageboxdata->buttons[0].buttonID;
+		*buttonid = messageboxdata->buttons[0].buttonid;
 
 	return 0;
 }
