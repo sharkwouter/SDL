@@ -66,7 +66,7 @@ int EventUpdate(void *data)
 {
     while (running) {
                 SDL_SemWait(event_sem);
-                                sceHprmPeekCurrentKey(&hprm);
+                                sceHprmPeekCurrentKey((u32 *) &hprm);
                 SDL_SemPost(event_sem);
                 /* Delay 1/60th of a second */
                 sceKernelDelayThread(1000000 / 60);
