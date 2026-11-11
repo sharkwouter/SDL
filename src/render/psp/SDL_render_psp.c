@@ -474,7 +474,7 @@ static bool TextureBindAsTarget(PSP_RenderData *data, PSP_TextureData *psp_textu
         }
     }
     LRUTargetBringFront(data, psp_texture);
-    sceGuDrawBufferList(psp_texture->format, vrelptr(psp_texture->data), psp_texture->textureWidth);
+    sceGuDrawBuffer(psp_texture->format, vrelptr(psp_texture->data), psp_texture->textureWidth);
 
     // Stencil alpha dst hack
     dstFormat = psp_texture->format;
@@ -1007,7 +1007,7 @@ static void StartDrawing(SDL_Renderer *renderer)
             TextureBindAsTarget(data, psp_texture);
         } else {
             // Set target back to screen
-            sceGuDrawBufferList(data->psm, vrelptr(data->frontbuffer), PSP_FRAME_BUFFER_WIDTH);
+            sceGuDrawBuffer(data->psm, vrelptr(data->frontbuffer), PSP_FRAME_BUFFER_WIDTH);
         }
         data->boundTarget = texture;
     }
